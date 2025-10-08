@@ -1,0 +1,178 @@
+"""
+leer_catalogo_viejo_v1_3_4_experimental.py
+Versión 1.3.4 — Escala corregida y visualización mejorada
+--------------------------------------------------------
+Mejoras:
+- Corrige la escala de los bounding boxes y puntos (alineados con el render 150 dpi).
+- Bounding boxes y puntos se dibujan en tamaño real respecto al PDF.
+- Líneas y textos más legibles en los PNG.
+- Solo guarda las imágenes (no abre ventanas).
+--------------------------------------------------------
+Requisitos:
+    pip install pdfplumber pandas matplotlib
+"""
+
+import os
+import pdfplumber
+import pandas as pd
+import re
+import matplotlib.pyplot as plt
+from statistics import mean
+
+# --------------------------
+# CONFIG
+# --------------------------
+PDF_FILE = "catalogo_viejo_prueba.pdf"
+OUTPUT_EXCEL = "catalogo_nuevo_prueba.xlsx"
+DEBUG_VISUAL = True      # Generar PNGs de depuración
+DEBUG_FOLDER = "debug_plots"
+CODE_REGEX = re.compile(r'^[A-Z]{1,4}-[A-Z0-9]{2,8}$')
+MAX_DISTANCE = 100        # distancia máxima vertical entre código y descripción
+
+os.makedirs(DEBUG_FOLDER, exist_ok=True)
+
+# --------------------------
+# FUNCIONES AUXILIARES
+# --------------------------
+def limpiar_texto(txt):
+    return re.sub(r'\s+', ' ', txt.strip())
+
+def es_linea_excluida(line):
+    upper_line = line.upper()
+    if any(p in upper_line for p in ["UND:", "BULTO:", "UND.VENTA", "@INSUMOSPARATODO"]):
+        return True
+    if re.search(r'\$\s*\d', upper_line):
+        return True
+    if re.search(r'\bCAJ\b', upper_line):
+        return True
+    if re.match(r'^[0-9\.,]+\s*\$?', line):
+        return True
+    return False
+
+def detectar_codigo(txt):
+    t = re.sub(r'[^A-Z0-9\-]', '', txt.upper())
+    if CODE_REGEX.match(t):
+        return t
+    return None
+
+# --------------------------
+# PROCESAR PÁGINA
+# --------------------------
+def procesar_pagina(page, page_idx):
+    words = page.extract_words()
+    if not words:
+        return []
+
+    items = []
+    for w in words:
+        text = limpiar_texto(w["text"])
+        if not text:
+            continue
+        cx = (w["x0"] + w["x1"]) / 2
+        cy = (w["top"] + w["bottom"]) / 2
+        items.append({"text": text, "cx": cx, "cy": cy})
+
+    code_items = [w for w in items if detectar_codigo(w["text"])]
+    if not code_items:
+        print(f"⚠️ No se detectaron códigos en página {page_idx + 1}")
+        return []
+
+    resultados = []
+    for c in code_items:
+        codigo = detectar_codigo(c["text"])
+        asociados = []
+
+        for w in items:
+            if w == c:
+                continue
+            if detectar_codigo(w["text"]):
+                continue
+            if es_linea_excluida(w["text"]):
+                continue
+
+            dx = abs(w["cx"] - c["cx"])
+            dy = w["cy"] - c["cy"]
+
+            if 0 < dy < MAX_DISTANCE and dx < 80:
+                asociados.append(w)
+
+        # Bounding box flexible
+        if asociados:
+            min_x = min([w["cx"] for w in asociados] + [c["cx"]]) - 30
+            max_x = max([w["cx"] for w in asociados] + [c["cx"]]) + 30
+            min_y = c["cy"] - 10
+            max_y = max([w["cy"] for w in asociados]) + 12
+        else:
+            min_x, max_x = c["cx"] - 40, c["cx"] + 40
+            min_y, max_y = c["cy"] - 10, c["cy"] + 40
+
+        desc = " ".join(limpiar_texto(w["text"]) for w in asociados)
+        resultados.append({
+            "codigo": codigo,
+            "descripcion": desc.strip(),
+            "_page": page_idx + 1,
+            "_bbox": (min_x, min_y, max_x, max_y)
+        })
+
+    return resultados
+
+# --------------------------
+# DEPURACIÓN VISUAL (PNG)
+# --------------------------
+def plot_debug(page, page_idx, resultados):
+    im = page.to_image(resolution=150)
+    scale = im.scale  # <- Corrige la escala para que coincida con coordenadas reales
+
+    fig, ax = plt.subplots(figsize=(8, 10))
+    ax.imshow(im.original, cmap="gray")
+    ax.set_title(f"Página {page_idx + 1}")
+
+    # Dibujar bounding boxes y códigos
+    for r in resultados:
+        (x0, y0, x1, y1) = r["_bbox"]
+        # Escalar coordenadas
+        x0, x1 = x0 * scale, x1 * scale
+        y0, y1 = y0 * scale, y1 * scale
+
+        ax.add_patch(plt.Rectangle(
+            (x0, y0), x1 - x0, y1 - y0,
+            fill=False, edgecolor="blue", linewidth=1.0, alpha=0.8
+        ))
+        ax.text(x0 + 2, y0 - 5, r["codigo"], color="red", fontsize=7, weight="bold")
+
+    # Ajustes visuales
+    plt.axis("off")
+    output_path = os.path.join(DEBUG_FOLDER, f"pagina_{page_idx + 1:02d}.png")
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+# --------------------------
+# PROCESAR PDF COMPLETO
+# --------------------------
+def procesar_pdf_vecindad(pdf_path):
+    resultados_totales = []
+    with pdfplumber.open(pdf_path) as pdf:
+        total_pages = len(pdf.pages)
+        for page_idx, page in enumerate(pdf.pages):
+            print(f"\n--- Página {page_idx + 1}/{total_pages} ---")
+            resultados = procesar_pagina(page, page_idx)
+            resultados_totales.extend(resultados)
+
+            print(f"Detectados códigos: {len(resultados)} → acumulado: {len(resultados_totales)}")
+
+            if DEBUG_VISUAL:
+                plot_debug(page, page_idx, resultados)
+
+    df = pd.DataFrame(resultados_totales)
+    df = df[["codigo", "descripcion", "_page"]]
+    df.to_excel(OUTPUT_EXCEL, index=False)
+    print(f"\n✅ Exportado a {OUTPUT_EXCEL} — filas: {len(df)}")
+    print(f"🖼️ Imágenes guardadas en carpeta: {DEBUG_FOLDER}/")
+    return df
+
+# --------------------------
+# RUN
+# --------------------------
+if __name__ == "__main__":
+    df = procesar_pdf_vecindad(PDF_FILE)
+    print(df.head(20))
