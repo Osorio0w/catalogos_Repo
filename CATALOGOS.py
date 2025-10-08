@@ -17,7 +17,7 @@ from PIL import Image
 # ================================
 EXCEL_FILE = "productos.xlsx"
 OUTPUT_FILE = "catalogo.pdf"
-HEADER_IMAGE_PATH = ""       # Selección en GUI
+HEADER_IMAGE_PATH =  ""       # Selección en GUI
 HEADER_IMAGE_PATH_2 = ""     # Segundo encabezado
 CODE_BACKGROUND_PATH = "placeholder_codigos.png"
 CANVA_SANS_BOLD = "fuentes/CanvaSans-Bold.ttf"
